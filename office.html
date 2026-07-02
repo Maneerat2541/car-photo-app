@@ -34,7 +34,8 @@ class OfficeScreen extends React.Component {
   constructor(props){
     super(props);
     this.SYNC_CONFIG = (typeof window !== 'undefined' && window.CARPHOTO_FIREBASE) || null;
-    this.state = { records:[], mode:'local', lightbox:null, flash:{}, zipping:null, dailyStats:{}, chartView:'week' };
+    this.sampleSteps = [{ key:'bar', title:'บาร์รถ' }, { key:'back', title:'หลังรถ' }, { key:'plate', title:'ทะเบียนรถ' }];
+    this.state = { records:[], mode:'local', lightbox:null, flash:{}, zipping:null, dailyStats:{}, chartView:'week', samples:{}, sampleBusy:null };
     this.seen = null; // null until first snapshot, then a Set of known ids
   }
 
@@ -46,10 +47,33 @@ class OfficeScreen extends React.Component {
       this.setState({ mode });
       this._unsub = m.subscribe(recs => this.onData(recs));
       this._unsubStats = m.subscribeStats(stats => this.setState({ dailyStats: stats }));
+      this._unsubSamples = m.subscribeSamples(s => this.setState({ samples: s || {} }));
     } catch(e){ console.warn('sync load failed', e); }
   }
-  componentWillUnmount(){ if (this._unsub) this._unsub(); if (this._unsubStats) this._unsubStats(); }
+  componentWillUnmount(){ if (this._unsub) this._unsub(); if (this._unsubStats) this._unsubStats(); if (this._unsubSamples) this._unsubSamples(); }
   setChartView(view){ this.setState({ chartView: view }); }
+
+  // ── รูปตัวอย่าง: ออฟฟิศอัปโหลด → เก็บบนคลาวด์ → แอปมือถือดึงไปแสดง ──
+  async toSampleDataUrl(file, maxDim){
+    const bmp = await createImageBitmap(file);
+    try {
+      const scale = Math.min(1, maxDim / Math.max(bmp.width, bmp.height));
+      const w = Math.max(1, Math.round(bmp.width * scale)), h = Math.max(1, Math.round(bmp.height * scale));
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      c.getContext('2d').drawImage(bmp, 0, 0, w, h);
+      return c.toDataURL('image/jpeg', 0.82);
+    } finally { bmp.close && bmp.close(); }
+  }
+  async onPickSample(key, e){
+    const f = e.target.files && e.target.files[0]; e.target.value = '';
+    if (!f || !this.sync) return;
+    if (!/^image\//.test(f.type)) { alert('กรุณาเลือกไฟล์รูปภาพ'); return; }
+    this.setState({ sampleBusy: key });
+    try { const url = await this.toSampleDataUrl(f, 1000); await this.sync.setSample(key, url); }
+    catch(err){ console.warn('sample upload failed', err); alert('อัปโหลดรูปตัวอย่างไม่สำเร็จ ลองใหม่'); }
+    this.setState({ sampleBusy: null });
+  }
+  removeSample(key){ if (this.sync) Promise.resolve(this.sync.deleteSample(key)).catch(()=>{}); }
 
   onData(recs){
     const ids = recs.map(r => String(r.id));
@@ -205,6 +229,40 @@ class OfficeScreen extends React.Component {
         </div>
 
         <div style={{maxWidth:1160,width:'100%',margin:'20px auto 0',padding:'0 26px',display:'flex',flexDirection:'column',gap:16}}>
+
+          <div style={{background:'#fff',border:'1px solid #e6e4df',borderRadius:16,padding:'18px 24px'}}>
+            <div>
+              <div style={{fontSize:15,fontWeight:700}}>รูปตัวอย่าง 3 ขั้น (สำหรับภาคสนาม)</div>
+              <div style={{fontSize:12,color:'#8a8f96',marginTop:2}}>อัปโหลดที่นี่ที่เดียว → เจ้าหน้าที่จะเห็นเป็นแบบในแอปมือถือ (มีลายน้ำ “ตัวอย่าง” คร่อมไว้)</div>
+            </div>
+            <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(200px,1fr))',gap:14,marginTop:14}}>
+              {this.sampleSteps.map((step,i)=>{
+                const img = s.samples[step.key];
+                const busy = s.sampleBusy===step.key;
+                return (
+                  <div key={step.key} style={{border:'1px solid #eceae5',borderRadius:12,padding:12,display:'flex',flexDirection:'column',gap:10}}>
+                    <div style={{display:'flex',alignItems:'center',gap:8}}>
+                      <span style={{width:22,height:22,borderRadius:'50%',background:'#2a6fdb',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:12,flex:'none'}}>{i+1}</span>
+                      <span style={{fontSize:14.5,fontWeight:600}}>{step.title}</span>
+                    </div>
+                    <div style={{position:'relative',width:'100%',aspectRatio:'4 / 3',borderRadius:10,overflow:'hidden',background:'#f4f3f0',border:'1px dashed #d9d7d1',display:'flex',alignItems:'center',justifyContent:'center'}}>
+                      {img
+                        ? <img src={img} onClick={()=>this.openLightbox(img)} style={{width:'100%',height:'100%',objectFit:'cover',cursor:'zoom-in'}} />
+                        : <span style={{fontSize:12,color:'#a7a49c'}}>ยังไม่มีรูปตัวอย่าง</span>}
+                      {busy && <div style={{position:'absolute',inset:0,background:'rgba(255,255,255,.72)',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,color:'#6b6f76',fontWeight:600}}>กำลังอัปโหลด…</div>}
+                    </div>
+                    <div style={{display:'flex',gap:8}}>
+                      <label style={{flex:1,textAlign:'center',border:'1.5px solid #2a6fdb',background:'#fff',color:'#2a6fdb',borderRadius:9,padding:'8px 10px',fontSize:12.5,fontWeight:600,cursor:'pointer'}}>
+                        {img ? 'เปลี่ยนรูป' : 'อัปโหลดรูป'}
+                        <input type="file" accept="image/*" style={{display:'none'}} onChange={(e)=>this.onPickSample(step.key,e)} />
+                      </label>
+                      {img && <button onClick={()=>this.removeSample(step.key)} style={{border:'1.5px solid #e0ddd5',background:'#fff',color:'#b23b3b',borderRadius:9,padding:'8px 12px',fontSize:12.5,fontWeight:600,cursor:'pointer'}}>ลบ</button>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
 
           <div style={{background:'#fff',border:'1px solid #e6e4df',borderRadius:16,padding:'20px 24px',display:'flex',alignItems:'center',gap:26,flexWrap:'wrap'}}>
             <div>

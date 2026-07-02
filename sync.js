@@ -19,15 +19,18 @@
 // plan (no billing account) as long as old days get deleted after download.
 const LOCAL_KEY = 'carphoto_cloud_v1';
 const STATS_KEY = 'carphoto_stats_v1';
+const SAMPLES_KEY = 'carphoto_samples_v1';
 const CHANNEL = 'carphoto_rt';
 const STATS_CHANNEL = 'carphoto_rt_stats';
+const SAMPLES_CHANNEL = 'carphoto_rt_samples';
 
 let mode = 'local';
 let fb = null, db = null;
-let recordsCol = null, shotsCol = null, statsCol = null;
+let recordsCol = null, shotsCol = null, statsCol = null, samplesCol = null;
 let sheetUrl = (typeof window !== 'undefined' && window.CARPHOTO_SHEET_URL) || null;
 const localListeners = new Set();
 const statsListeners = new Set();
+const sampleListeners = new Set();
 
 // Fire-and-forget append to a Google Apps Script Web App bound to a Sheet.
 // no-cors + text/plain avoids a CORS preflight; Apps Script reads
@@ -58,6 +61,7 @@ export async function initSync(config) {
       recordsCol = fsMod.collection(db, base);
       shotsCol = fsMod.collection(db, base + '_shots');
       statsCol = fsMod.collection(db, base + '_stats');
+      samplesCol = fsMod.collection(db, base + '_samples');
       mode = 'firebase';
       return 'firebase';
     } catch (e) {
@@ -185,6 +189,56 @@ export function subscribeStats(cb) {
   window.addEventListener('storage', onStorage);
   return () => {
     statsListeners.delete(emit);
+    try { bc && bc.close(); } catch (e) {}
+    window.removeEventListener('storage', onStorage);
+  };
+}
+
+// ── รูปตัวอย่าง (sample reference photos) ──────────────────────────────────
+// หน้าออฟฟิศเป็นผู้อัปโหลด แอปมือถืออ่านมาแสดงอย่างเดียว. เก็บรูปตัวอย่างละ 1
+// เอกสาร (id = 'bar' | 'back' | 'plate') ใน "<collection>_samples" เพื่อไม่ให้
+// เอกสารเดียวชนลิมิต 1MiB. โหมด local เก็บใน localStorage + ข้ามแท็บผ่าน
+// BroadcastChannel เหมือน record.
+function readSamples() { try { return JSON.parse(localStorage.getItem(SAMPLES_KEY) || '{}'); } catch (e) { return {}; } }
+function writeSamples(obj) { try { localStorage.setItem(SAMPLES_KEY, JSON.stringify(obj)); } catch (e) {} }
+function notifySamples() {
+  sampleListeners.forEach(fn => { try { fn(); } catch (e) {} });
+  try { new BroadcastChannel(SAMPLES_CHANNEL).postMessage('update'); } catch (e) {}
+}
+
+// key: 'bar' | 'back' | 'plate' ; img: data-URL (or null to clear)
+export async function setSample(key, img) {
+  if (mode === 'firebase' && samplesCol) {
+    if (img == null) { try { await fb.deleteDoc(fb.doc(samplesCol, key)); } catch (e) {} return; }
+    await fb.setDoc(fb.doc(samplesCol, key), { img, updatedAt: Date.now() });
+    return;
+  }
+  const obj = readSamples();
+  if (img == null) delete obj[key]; else obj[key] = img;
+  writeSamples(obj);
+  notifySamples();
+}
+
+export async function deleteSample(key) { return setSample(key, null); }
+
+// cb receives a map { bar, back, plate } of data-URLs (missing keys absent)
+export function subscribeSamples(cb) {
+  if (mode === 'firebase' && samplesCol) {
+    return fb.onSnapshot(samplesCol, snap => {
+      const obj = {};
+      snap.docs.forEach(d => { const v = d.data() || {}; if (v.img) obj[d.id] = v.img; });
+      cb(obj);
+    }, err => console.warn('[sync] samples snapshot error', err));
+  }
+  const emit = () => cb(readSamples());
+  sampleListeners.add(emit);
+  emit();
+  let bc = null;
+  try { bc = new BroadcastChannel(SAMPLES_CHANNEL); bc.onmessage = emit; } catch (e) {}
+  const onStorage = e => { if (e.key === SAMPLES_KEY) emit(); };
+  window.addEventListener('storage', onStorage);
+  return () => {
+    sampleListeners.delete(emit);
     try { bc && bc.close(); } catch (e) {}
     window.removeEventListener('storage', onStorage);
   };
