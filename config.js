@@ -22,5 +22,4 @@ window.CARPHOTO_FIREBASE = {
 
 // 2) Google Sheet — ส่ง วันที่/เวลา/จำนวนรถ/ทะเบียน ลงชีตอัตโนมัติ (ตัวเลือกเสริม)
 //    วาง URL ที่ได้จากการ Deploy Apps Script (ลงท้าย /exec) — ดู google-apps-script.gs
-window.CARPHOTO_SHEET_URL = null;
-// window.CARPHOTO_SHEET_URL = "https://script.google.com/macros/s/XXXXXXXX/exec";
+window.CARPHOTO_SHEET_URL = "https://script.google.com/macros/s/AKfycbyVQAqfD8Bcdnr0b0LQNi8hhXTcG7B-kvfo1nTon0FX4WYw2Wt7lt3TnaZyTDfjKyofow/exec";
