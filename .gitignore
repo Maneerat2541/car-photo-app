@@ -1,0 +1,10 @@
+# ดีไซน์ต้นฉบับจาก Claude Design — เก็บไว้ในเครื่องเพื่ออ้างอิง ไม่ต้อง publish
+handoff_extracted/
+*.zip
+
+# ไฟล์ตั้งค่าเฉพาะเครื่อง
+.claude/settings.local.json
+
+# เผลอสร้าง
+.DS_Store
+Thumbs.db

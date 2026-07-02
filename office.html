@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>หน้าจอออฟฟิศ · เรียลไทม์</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<!-- ตั้งค่าปลายทางออนไลน์ (Firebase / Google Sheet) แก้ที่ config.js ไฟล์เดียว -->
+<script src="config.js"></script>
+
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:#eceae5;font-family:'Sarabun',system-ui,sans-serif;-webkit-font-smoothing:antialiased;color:#1c1c1e}
+  button{font-family:inherit}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+  @keyframes flashin{from{background:#eaf3ff;box-shadow:0 0 0 3px #2a6fdb}to{background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.06)}}
+  .newcard{animation:flashin 4s ease forwards}
+</style>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/plain" id="app-src">
+class OfficeScreen extends React.Component {
+  constructor(props){
+    super(props);
+    this.SYNC_CONFIG = (typeof window !== 'undefined' && window.CARPHOTO_FIREBASE) || null;
+    this.state = { records:[], mode:'local', lightbox:null, flash:{}, zipping:null, dailyStats:{}, chartView:'week' };
+    this.seen = null; // null until first snapshot, then a Set of known ids
+  }
+
+  async componentDidMount(){
+    try {
+      const m = await import('./sync.js');
+      this.sync = m;
+      const mode = await m.initSync(this.SYNC_CONFIG);
+      this.setState({ mode });
+      this._unsub = m.subscribe(recs => this.onData(recs));
+      this._unsubStats = m.subscribeStats(stats => this.setState({ dailyStats: stats }));
+    } catch(e){ console.warn('sync load failed', e); }
+  }
+  componentWillUnmount(){ if (this._unsub) this._unsub(); if (this._unsubStats) this._unsubStats(); }
+  setChartView(view){ this.setState({ chartView: view }); }
+
+  onData(recs){
+    const ids = recs.map(r => String(r.id));
+    if (this.seen === null){
+      this.seen = new Set(ids); // first load: nothing is "new"
+    } else {
+      const fresh = ids.filter(id => !this.seen.has(id));
+      if (fresh.length){
+        const flash = Object.assign({}, this.state.flash);
+        fresh.forEach(id => { flash[id] = true; });
+        this.setState({ flash });
+        setTimeout(()=>{
+          const f = Object.assign({}, this.state.flash);
+          fresh.forEach(id => delete f[id]);
+          this.setState({ flash: f });
+        }, 4200);
+      }
+      ids.forEach(id => this.seen.add(id));
+    }
+    this.setState({ records: recs });
+  }
+
+  pad2(n){ return String(n).padStart(2,'0'); }
+  dateKey(d){ return d.getFullYear()+'-'+this.pad2(d.getMonth()+1)+'-'+this.pad2(d.getDate()); }
+  openLightbox(img){ if (img) this.setState({ lightbox:img }); }
+
+  async downloadDayZip(dateKey, dateLabel){
+    const recs = (this.state.records||[]).filter(r=>r.dateKey===dateKey);
+    if (!recs.length) return;
+    this.setState({ zipping: dateKey });
+    try {
+      const mod = await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm');
+      const JSZip = mod.default || mod;
+      const zip = new JSZip();
+      recs.forEach(r=>{
+        const folder = (r.plate || 'ไม่ระบุทะเบียน').replace(/[\\/:*?"<>|]/g,'_') + '_' + String(r.time||'').replace(':','');
+        (r.shots||[]).forEach(sh=>{
+          const m = /^data:image\/(\w+);base64,(.*)$/.exec(sh.img || '');
+          if (!m) return;
+          const ext = m[1] === 'jpeg' ? 'jpg' : m[1];
+          zip.file(folder + '/' + sh.title + '.' + ext, m[2], { base64:true });
+        });
+      });
+      const blob = await zip.generateAsync({ type:'blob' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'รูปรถ_' + String(dateLabel).replace(/\//g,'-') + '.zip';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 4000);
+    } catch(e){ console.warn('zip failed', e); alert('ดาวน์โหลดไม่สำเร็จ ลองใหม่อีกครั้ง'); }
+    this.setState({ zipping:null });
+  }
+
+  async deleteDay(dateKey, dateLabel){
+    const recs = (this.state.records||[]).filter(r=>r.dateKey===dateKey);
+    if (!recs.length || !this.sync) return;
+    const ok = window.confirm('ลบข้อมูลวันที่ ' + dateLabel + ' (' + recs.length + ' รายการ) ออกจากคลาวด์?\nแนะนำให้ดาวน์โหลดเก็บไว้ก่อนลบ');
+    if (!ok) return;
+    await this.sync.deleteRecords(recs.map(r=>r.id));
+  }
+
+  render(){
+    const s = this.state, recs = s.records || [];
+    const todayKey = this.dateKey(new Date());
+    const todayRecs = recs.filter(r=>r.dateKey===todayKey);
+    const incompleteToday = todayRecs.filter(r=>(r.shots||[]).length < 3);
+    const summaryComplete = todayRecs.length>0 && incompleteToday.length===0;
+    const summaryIncomplete = incompleteToday.length>0;
+    const summaryRange = todayRecs.length ? (todayRecs[todayRecs.length-1].time + ' – ' + todayRecs[0].time + ' น.') : '';
+    const stats = s.dailyStats || {};
+    const todayEntry = stats[todayKey];
+    const summaryCount = todayEntry ? todayEntry.count : todayRecs.length;
+
+    const now = new Date();
+    const buildDays = (days) => {
+      const arr = [];
+      for (let i = days - 1; i >= 0; i--) {
+        const d = new Date(now); d.setDate(d.getDate() - i);
+        const key = this.dateKey(d);
+        arr.push({ key, label: this.pad2(d.getDate())+'/'+this.pad2(d.getMonth()+1), count: (stats[key] && stats[key].count) || 0 });
+      }
+      return arr;
+    };
+    const buildHours = () => {
+      const hours = (stats[todayKey] && stats[todayKey].hours) || {};
+      const arr = [];
+      for (let h = 0; h < 24; h++) {
+        arr.push({ key:String(h), label: this.pad2(h)+':00', count: hours[h] || hours[String(h)] || 0 });
+      }
+      return arr;
+    };
+    const buildMonths = (n) => {
+      const arr = [];
+      for (let i = n - 1; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const ykey = d.getFullYear() + '-' + this.pad2(d.getMonth()+1);
+        let sum = 0;
+        Object.keys(stats).forEach(k=>{ if (k.indexOf(ykey + '-') === 0) sum += (stats[k].count || 0); });
+        arr.push({ key: ykey, label: this.pad2(d.getMonth()+1)+'/'+String(d.getFullYear()).slice(2), count: sum });
+      }
+      return arr;
+    };
+
+    const dayData = buildHours(), weekData = buildDays(7), monthData = buildDays(30), yearData = buildMonths(12);
+    const dayTotal = dayData.reduce((a,b)=>a+b.count,0), weekTotal = weekData.reduce((a,b)=>a+b.count,0);
+    const monthTotal = monthData.reduce((a,b)=>a+b.count,0), yearTotal = yearData.reduce((a,b)=>a+b.count,0);
+
+    const view = s.chartView || 'week';
+    const activeData = view==='day' ? dayData : view==='month' ? monthData : view==='year' ? yearData : weekData;
+    const activeTotal = view==='day' ? dayTotal : view==='month' ? monthTotal : view==='year' ? yearTotal : weekTotal;
+    const activeMax = Math.max(1, ...activeData.map(d=>d.count));
+    const skipLabel = view==='month' ? 5 : view==='day' ? 3 : 1;
+    const chartBars = activeData.map((d,i)=>({
+      key:d.key, countLabel: d.count>0 ? String(d.count) : '',
+      barHeight: Math.max(d.count>0 ? 8 : 2, Math.round((d.count/activeMax)*100)),
+      labelText: (i % skipLabel === 0 || i === activeData.length-1) ? d.label : '',
+    }));
+    let insightLabel = 'ยังไม่มีข้อมูลในช่วงนี้';
+    if (activeTotal > 0) {
+      let maxItem = activeData[0], minItem = activeData[0];
+      activeData.forEach(d=>{ if (d.count > maxItem.count) maxItem = d; if (d.count < minItem.count) minItem = d; });
+      insightLabel = 'ช่วงมากสุด ' + maxItem.label + ' (' + maxItem.count + ' คัน) · น้อยสุด ' + minItem.label + ' (' + minItem.count + ' คัน)';
+    }
+    const rangeLabels = { day:'วันนี้ · รายชั่วโมง', week:'7 วันล่าสุด', month:'30 วันล่าสุด', year:'12 เดือนล่าสุด' };
+
+    const map = {};
+    recs.forEach(r=>{ (map[r.dateKey] = map[r.dateKey] || { dateLabel:r.dateLabel, dateKey:r.dateKey, records:[] }).records.push(r); });
+    const groups = Object.values(map).sort((a,b)=> a.dateKey < b.dateKey ? 1 : -1);
+
+    const modeLabel = s.mode==='firebase' ? 'ออนไลน์ · Firebase' : 'เดโมในเครื่อง · ข้ามแท็บ';
+    const btnBg = (v)=> view===v ? '#fff' : 'transparent';
+    const btnColor = (v)=> view===v ? '#1c1c1e' : '#8a8f96';
+
+    return (
+      <div style={{minHeight:'100vh',display:'flex',flexDirection:'column'}}>
+
+        <div style={{position:'sticky',top:0,zIndex:10,background:'#fff',borderBottom:'1px solid #e6e4df',padding:'16px 26px',display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:14}}>
+          <div style={{display:'flex',alignItems:'center',gap:14}}>
+            <div style={{display:'flex',alignItems:'center',gap:8}}>
+              <span style={{width:11,height:11,borderRadius:'50%',background:'#1fb26b',animation:'pulse 1.4s ease-in-out infinite'}}></span>
+              <span style={{fontSize:13,fontWeight:600,color:'#1fb26b'}}>LIVE</span>
+            </div>
+            <div>
+              <div style={{fontSize:12,letterSpacing:'.12em',color:'#2a6fdb',fontWeight:600}}>หน้าจอออฟฟิศ · เรียลไทม์</div>
+              <div style={{fontSize:20,fontWeight:700,lineHeight:1.2}}>รูปรถที่ส่งเข้ามา</div>
+            </div>
+          </div>
+          <div style={{display:'flex',alignItems:'center',gap:22}}>
+            <div style={{textAlign:'right'}}><div style={{fontSize:26,fontWeight:700,lineHeight:1}}>{String(todayRecs.length)}</div><div style={{fontSize:11.5,color:'#8a8f96'}}>รายการวันนี้</div></div>
+            <div style={{textAlign:'right'}}><div style={{fontSize:26,fontWeight:700,lineHeight:1}}>{String(recs.length)}</div><div style={{fontSize:11.5,color:'#8a8f96'}}>ทั้งหมด</div></div>
+            <div style={{display:'inline-flex',alignItems:'center',gap:7,background:'#eef3fb',color:'#2a6fdb',fontSize:12,fontWeight:600,padding:'7px 12px',borderRadius:20}}><span style={{width:7,height:7,borderRadius:'50%',background:'#2a6fdb'}}></span>{modeLabel}</div>
+          </div>
+        </div>
+
+        <div style={{maxWidth:1160,width:'100%',margin:'20px auto 0',padding:'0 26px',display:'flex',flexDirection:'column',gap:16}}>
+
+          <div style={{background:'#fff',border:'1px solid #e6e4df',borderRadius:16,padding:'20px 24px',display:'flex',alignItems:'center',gap:26,flexWrap:'wrap'}}>
+            <div>
+              <div style={{fontSize:12,color:'#8a8f96',fontWeight:600,letterSpacing:'.08em'}}>สรุปวันนี้</div>
+              <div style={{fontSize:32,fontWeight:700,marginTop:2}}>{String(summaryCount)} <span style={{fontSize:15,fontWeight:600,color:'#8a8f96'}}>คัน</span></div>
+            </div>
+            {todayRecs.length>0 && <div style={{fontSize:13,color:'#8a8f96'}}>ช่วงเวลา {summaryRange}</div>}
+            <div style={{flex:1}}></div>
+            {summaryComplete && <div style={{display:'inline-flex',alignItems:'center',gap:8,background:'#e7f4ec',color:'#1f8a5b',fontWeight:700,fontSize:13.5,padding:'9px 16px',borderRadius:12}}>✓ ถ่ายรูปครบ 3 ชนิดทุกคัน</div>}
+            {summaryIncomplete && <div style={{display:'inline-flex',alignItems:'center',gap:8,background:'#fdecec',color:'#b23b3b',fontWeight:700,fontSize:13.5,padding:'9px 16px',borderRadius:12}}>⚠ {String(incompleteToday.length)} คันรูปไม่ครบ</div>}
+          </div>
+
+          <div style={{background:'#fff',border:'1px solid #e6e4df',borderRadius:16,padding:'20px 24px'}}>
+            <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16,flexWrap:'wrap',gap:10}}>
+              <div>
+                <div style={{fontSize:15,fontWeight:700}}>แนวโน้มจำนวนรถ</div>
+                <div style={{fontSize:12,color:'#8a8f96',marginTop:2}}>{rangeLabels[view]} · รวม {String(activeTotal)} คัน</div>
+              </div>
+              <div style={{display:'flex',background:'#f4f3f0',borderRadius:10,padding:3,gap:2}}>
+                {[['day','รายวัน'],['week','รายสัปดาห์'],['month','รายเดือน'],['year','รายปี']].map(([v,label])=>(
+                  <button key={v} onClick={()=>this.setChartView(v)} style={{border:'none',background:btnBg(v),color:btnColor(v),borderRadius:8,padding:'7px 13px',fontSize:12.5,fontWeight:600,cursor:'pointer'}}>{label}</button>
+                ))}
+              </div>
+            </div>
+            <div style={{display:'flex',alignItems:'flex-end',gap:5,height:130,paddingTop:10}}>
+              {chartBars.map((b)=>(
+                <div key={b.key} style={{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'flex-end',gap:5,height:'100%',minWidth:0}}>
+                  <div style={{fontSize:10,color:'#8a8f96',fontFamily:'ui-monospace,monospace',minHeight:12}}>{b.countLabel}</div>
+                  <div style={{width:'100%',maxWidth:24,background:'#2a6fdb',borderRadius:'4px 4px 1px 1px',minHeight:2,height:b.barHeight}}></div>
+                  <div style={{fontSize:9.5,color:'#a7a49c',whiteSpace:'nowrap',minHeight:12}}>{b.labelText}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{marginTop:12,paddingTop:12,borderTop:'1px solid #eee',fontSize:12,color:'#8a8f96'}}>{insightLabel}</div>
+          </div>
+
+        </div>
+
+        <div style={{flex:1,maxWidth:1160,width:'100%',margin:'0 auto',padding:'24px 26px 60px'}}>
+          {recs.length>0 ? groups.map((g,gi)=>{
+            const zipLabel = s.zipping === g.dateKey ? 'กำลังรวมไฟล์…' : 'ดาวน์โหลด (ZIP)';
+            return (
+              <div key={gi} style={{marginBottom:30}}>
+                <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:14}}>
+                  <div style={{position:'relative',width:32,height:26,flex:'none'}}><div style={{position:'absolute',top:0,left:0,width:14,height:6,background:'#2a6fdb',borderRadius:'2px 2px 0 0'}}></div><div style={{position:'absolute',top:4,left:0,width:32,height:20,border:'2px solid #2a6fdb',borderRadius:3,background:'#fff'}}></div></div>
+                  <div style={{fontSize:18,fontWeight:700}}>{g.dateLabel}</div>
+                  <div style={{fontSize:13,color:'#8a8f96'}}>· {g.records.length} รายการ</div>
+                  <div style={{flex:1,height:1,background:'#e0ddd5'}}></div>
+                  <button onClick={()=>this.downloadDayZip(g.dateKey, g.dateLabel)} style={{border:'1.5px solid #2a6fdb',background:'#fff',color:'#2a6fdb',borderRadius:9,padding:'8px 14px',fontSize:12.5,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap'}}>{zipLabel}</button>
+                  <button onClick={()=>this.deleteDay(g.dateKey, g.dateLabel)} style={{border:'1.5px solid #e0ddd5',background:'#fff',color:'#b23b3b',borderRadius:9,padding:'8px 14px',fontSize:12.5,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap'}}>ลบออกจากคลาวด์</button>
+                </div>
+                <div style={{fontSize:11.5,color:'#a7a49c',margin:'-6px 0 12px'}}>ดาวน์โหลดเก็บไว้ในเครื่องก่อน แล้วค่อยลบออกจากคลาวด์ กันพื้นที่ฟรีเต็ม</div>
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))',gap:16}}>
+                  {g.records.map((r,ri)=>{
+                    const isNew = !!s.flash[String(r.id)];
+                    const mapUrl = r.location ? ('https://www.google.com/maps?q='+r.location.lat+','+r.location.lng) : null;
+                    const gpsLabel = r.location ? (r.location.lat.toFixed(5)+', '+r.location.lng.toFixed(5)+(r.location.demo?' (จำลอง)':'')) : null;
+                    return (
+                      <div key={ri} className={isNew ? 'newcard' : ''} style={{background:'#fff',border:'1px solid #e6e4df',borderRadius:16,padding:15,boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>
+                        <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
+                          <div style={{display:'flex',alignItems:'center',gap:9,minWidth:0}}>
+                            <div style={{fontSize:17,fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{r.plate || 'ไม่ระบุทะเบียน'}</div>
+                            {isNew && <span style={{fontSize:10.5,fontWeight:700,color:'#fff',background:'#1fb26b',padding:'2px 8px',borderRadius:20,flex:'none'}}>ใหม่</span>}
+                          </div>
+                          <div style={{fontSize:12.5,color:'#8a8f96',fontFamily:'ui-monospace,monospace',flex:'none'}}>{r.time} น.</div>
+                        </div>
+                        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
+                          {(r.shots||[]).map((th,ti)=>(
+                            <div key={ti}>
+                              <img src={th.img} onClick={()=>this.openLightbox(th.img)} style={{width:'100%',aspectRatio:'3 / 4',objectFit:'cover',borderRadius:9,cursor:'zoom-in',background:'#eee',display:'block'}} />
+                              <div style={{fontSize:10.5,color:'#8a8f96',textAlign:'center',marginTop:4}}>{th.title}</div>
+                            </div>
+                          ))}
+                        </div>
+                        {mapUrl && (
+                          <a href={mapUrl} target="_blank" style={{display:'inline-flex',alignItems:'center',gap:7,marginTop:12,fontSize:12,color:'#2a6fdb',textDecoration:'none',fontFamily:'ui-monospace,monospace'}}><span style={{width:7,height:7,borderRadius:'50%',background:'#2a6fdb',display:'inline-block'}}></span>เปิดแผนที่ · {gpsLabel}</a>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          }) : (
+            <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:12,padding:'120px 20px',textAlign:'center',color:'#a7a49c'}}>
+              <span style={{width:14,height:14,borderRadius:'50%',background:'#1fb26b',animation:'pulse 1.4s ease-in-out infinite'}}></span>
+              <div style={{fontSize:17,fontWeight:600,color:'#6b6f76'}}>กำลังรอรูปจากภาคสนาม…</div>
+              <div style={{fontSize:13.5,maxWidth:340,lineHeight:1.6}}>เมื่อเจ้าหน้าที่ถ่ายครบ 3 รูปแล้วกดส่ง รายการจะเด้งขึ้นที่นี่ทันที</div>
+            </div>
+          )}
+        </div>
+
+        {s.lightbox && (
+          <div onClick={()=>this.setState({ lightbox:null })} style={{position:'fixed',inset:0,background:'rgba(0,0,0,.9)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:50,padding:30,cursor:'zoom-out'}}>
+            <img src={s.lightbox} style={{maxWidth:'100%',maxHeight:'100%',borderRadius:8}} />
+          </div>
+        )}
+
+      </div>
+    );
+  }
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<OfficeScreen />);
+</script>
+<script>
+  // Compile with the classic JSX runtime so JSX -> React.createElement (global React),
+  // avoiding the automatic runtime's bare "react/jsx-runtime" import.
+  (function(){
+    var src = document.getElementById('app-src').textContent;
+    var compiled = Babel.transform(src, { presets: [['react', { runtime: 'classic' }]] }).code;
+    (0, eval)(compiled);
+  })();
+</script>
+</body>
+</html>
