@@ -35,7 +35,7 @@ class OfficeScreen extends React.Component {
     super(props);
     this.SYNC_CONFIG = (typeof window !== 'undefined' && window.CARPHOTO_FIREBASE) || null;
     this.sampleSteps = [{ key:'bar', title:'บาร์รถ' }, { key:'back', title:'หลังรถ' }, { key:'plate', title:'ทะเบียนรถ' }];
-    this.state = { records:[], mode:'local', lightbox:null, flash:{}, zipping:null, dailyStats:{}, chartView:'week', samples:{}, sampleBusy:null };
+    this.state = { records:[], mode:'local', lightbox:null, flash:{}, zipping:null, dailyStats:{}, chartView:'week', samples:{}, sampleBusy:null, selected:{}, deletingSelection:false };
     this.seen = null; // null until first snapshot, then a Set of known ids
   }
 
@@ -127,12 +127,64 @@ class OfficeScreen extends React.Component {
     this.setState({ zipping:null });
   }
 
-  async deleteDay(dateKey, dateLabel){
-    const recs = (this.state.records||[]).filter(r=>r.dateKey===dateKey);
-    if (!recs.length || !this.sync) return;
-    const ok = window.confirm('ลบข้อมูลวันที่ ' + dateLabel + ' (' + recs.length + ' รายการ) ออกจากคลาวด์?\nแนะนำให้ดาวน์โหลดเก็บไว้ก่อนลบ');
+  // ── เลือกรายการเพื่อลบ: ทีละรูป / ทีละคัน / ทั้งวัน ──────────────────────
+  // selected เก็บเป็น { [recordId]: { [shotKey]: true } } — เลือกทั้งคัน คือ
+  // เลือกครบทุก key ของ shots คันนั้น, เลือกทั้งวัน คือเลือกครบทุกคันในวันนั้น
+  isShotSelected(recId, key){ const r = this.state.selected[recId]; return !!(r && r[key]); }
+  isRecordSelected(rec){ const shots = rec.shots||[]; return shots.length>0 && shots.every(sh=>this.isShotSelected(rec.id, sh.key)); }
+  isDaySelected(day){ return day.records.length>0 && day.records.every(r=>this.isRecordSelected(r)); }
+  selectionCount(){
+    let photos=0; const cars = new Set();
+    Object.keys(this.state.selected).forEach(id=>{
+      const keys = Object.keys(this.state.selected[id]).filter(k=>this.state.selected[id][k]);
+      if (keys.length){ photos += keys.length; cars.add(id); }
+    });
+    return { photos, cars: cars.size };
+  }
+  toggleShot(recId, key){
+    const sel = Object.assign({}, this.state.selected);
+    const cur = Object.assign({}, sel[recId]);
+    if (cur[key]) delete cur[key]; else cur[key] = true;
+    if (Object.keys(cur).length) sel[recId] = cur; else delete sel[recId];
+    this.setState({ selected: sel });
+  }
+  toggleRecord(rec){
+    const sel = Object.assign({}, this.state.selected);
+    if (this.isRecordSelected(rec)) delete sel[rec.id];
+    else { const cur = {}; (rec.shots||[]).forEach(sh=>{ cur[sh.key]=true; }); sel[rec.id] = cur; }
+    this.setState({ selected: sel });
+  }
+  toggleDay(day){
+    const sel = Object.assign({}, this.state.selected);
+    if (this.isDaySelected(day)) day.records.forEach(r=>delete sel[r.id]);
+    else day.records.forEach(r=>{ const cur={}; (r.shots||[]).forEach(sh=>{ cur[sh.key]=true; }); sel[r.id]=cur; });
+    this.setState({ selected: sel });
+  }
+  clearSelection(){ this.setState({ selected:{} }); }
+
+  async deleteSelected(){
+    if (!this.sync || this.state.deletingSelection) return;
+    const { photos, cars } = this.selectionCount();
+    if (!photos) return;
+    const ok = window.confirm('ลบรูปที่เลือก ' + photos + ' รูป (' + cars + ' คัน) ออกจากคลาวด์?\nแนะนำให้ดาวน์โหลดเก็บไว้ก่อนลบ');
     if (!ok) return;
-    await this.sync.deleteRecords(recs.map(r=>r.id));
+    const records = this.state.records || [];
+    const fullIds = [], partial = [];
+    Object.keys(this.state.selected).forEach(recId=>{
+      const keys = Object.keys(this.state.selected[recId]).filter(k=>this.state.selected[recId][k]);
+      if (!keys.length) return;
+      const rec = records.find(r=>String(r.id)===String(recId));
+      const total = rec ? (rec.shots||[]).length : keys.length;
+      if (keys.length >= total) fullIds.push(recId); else partial.push({ recId, keys });
+    });
+    this.setState({ deletingSelection:true });
+    try {
+      await Promise.all([
+        fullIds.length ? this.sync.deleteRecords(fullIds) : Promise.resolve(),
+        ...partial.map(p=>this.sync.deleteShots(p.recId, p.keys)),
+      ]);
+    } catch(e){ console.warn('delete selected failed', e); }
+    this.setState({ deletingSelection:false, selected:{} });
   }
 
   render(){
@@ -302,19 +354,31 @@ class OfficeScreen extends React.Component {
         </div>
 
         <div style={{flex:1,maxWidth:1160,width:'100%',margin:'0 auto',padding:'24px 26px 60px'}}>
+          {(() => {
+            const sel = this.selectionCount();
+            if (!sel.photos) return null;
+            return (
+              <div style={{position:'sticky',top:0,zIndex:9,background:'#1c1c1e',color:'#fff',borderRadius:14,padding:'12px 18px',marginBottom:18,display:'flex',alignItems:'center',gap:14,flexWrap:'wrap',boxShadow:'0 6px 20px rgba(0,0,0,.22)'}}>
+                <div style={{fontSize:13.5,fontWeight:600}}>เลือกอยู่ {sel.photos} รูป ({sel.cars} คัน)</div>
+                <div style={{flex:1}}></div>
+                <button onClick={()=>this.clearSelection()} style={{border:'1.5px solid #4a4f55',background:'transparent',color:'#fff',borderRadius:9,padding:'8px 14px',fontSize:12.5,fontWeight:600,cursor:'pointer'}}>ยกเลิกเลือก</button>
+                <button onClick={()=>this.deleteSelected()} disabled={s.deletingSelection} style={{border:'none',background:'#e5484d',color:'#fff',borderRadius:9,padding:'8px 16px',fontSize:12.5,fontWeight:700,cursor:s.deletingSelection?'default':'pointer',opacity:s.deletingSelection?.7:1}}>{s.deletingSelection ? 'กำลังลบ…' : 'ลบรายการที่เลือก'}</button>
+              </div>
+            );
+          })()}
           {recs.length>0 ? groups.map((g,gi)=>{
             const zipLabel = s.zipping === g.dateKey ? 'กำลังรวมไฟล์…' : 'ดาวน์โหลด (ZIP)';
             return (
               <div key={gi} style={{marginBottom:30}}>
                 <div style={{display:'flex',alignItems:'center',gap:12,marginBottom:14}}>
+                  <input type="checkbox" checked={this.isDaySelected(g)} onChange={()=>this.toggleDay(g)} title="เลือกทั้งวัน" style={{width:17,height:17,accentColor:'#2a6fdb',cursor:'pointer',flex:'none'}} />
                   <div style={{position:'relative',width:32,height:26,flex:'none'}}><div style={{position:'absolute',top:0,left:0,width:14,height:6,background:'#2a6fdb',borderRadius:'2px 2px 0 0'}}></div><div style={{position:'absolute',top:4,left:0,width:32,height:20,border:'2px solid #2a6fdb',borderRadius:3,background:'#fff'}}></div></div>
                   <div style={{fontSize:18,fontWeight:700}}>{g.dateLabel}</div>
                   <div style={{fontSize:13,color:'#8a8f96'}}>· {g.records.length} รายการ</div>
                   <div style={{flex:1,height:1,background:'#e0ddd5'}}></div>
                   <button onClick={()=>this.downloadDayZip(g.dateKey, g.dateLabel)} style={{border:'1.5px solid #2a6fdb',background:'#fff',color:'#2a6fdb',borderRadius:9,padding:'8px 14px',fontSize:12.5,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap'}}>{zipLabel}</button>
-                  <button onClick={()=>this.deleteDay(g.dateKey, g.dateLabel)} style={{border:'1.5px solid #e0ddd5',background:'#fff',color:'#b23b3b',borderRadius:9,padding:'8px 14px',fontSize:12.5,fontWeight:600,cursor:'pointer',whiteSpace:'nowrap'}}>ลบออกจากคลาวด์</button>
                 </div>
-                <div style={{fontSize:11.5,color:'#a7a49c',margin:'-6px 0 12px'}}>ดาวน์โหลดเก็บไว้ในเครื่องก่อน แล้วค่อยลบออกจากคลาวด์ กันพื้นที่ฟรีเต็ม</div>
+                <div style={{fontSize:11.5,color:'#a7a49c',margin:'-6px 0 12px'}}>ติ๊กเลือกทั้งวัน ทั้งคัน หรือทีละรูปด้านล่าง แล้วกด "ลบรายการที่เลือก" ด้านบนเพื่อลบออกจากคลาวด์ — ดาวน์โหลดเก็บไว้ในเครื่องก่อนลบทุกครั้ง</div>
                 <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(320px,1fr))',gap:16}}>
                   {g.records.map((r,ri)=>{
                     const isNew = !!s.flash[String(r.id)];
@@ -324,18 +388,23 @@ class OfficeScreen extends React.Component {
                       <div key={ri} className={isNew ? 'newcard' : ''} style={{background:'#fff',border:'1px solid #e6e4df',borderRadius:16,padding:15,boxShadow:'0 1px 3px rgba(0,0,0,.06)'}}>
                         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
                           <div style={{display:'flex',alignItems:'center',gap:9,minWidth:0}}>
+                            <input type="checkbox" checked={this.isRecordSelected(r)} onChange={()=>this.toggleRecord(r)} title="เลือกทั้งคัน" style={{width:16,height:16,accentColor:'#2a6fdb',cursor:'pointer',flex:'none'}} />
                             <div style={{fontSize:17,fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{r.plate || 'ไม่ระบุทะเบียน'}</div>
                             {isNew && <span style={{fontSize:10.5,fontWeight:700,color:'#fff',background:'#1fb26b',padding:'2px 8px',borderRadius:20,flex:'none'}}>ใหม่</span>}
                           </div>
                           <div style={{fontSize:12.5,color:'#8a8f96',fontFamily:'ui-monospace,monospace',flex:'none'}}>{r.time} น.</div>
                         </div>
                         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>
-                          {(r.shots||[]).map((th,ti)=>(
-                            <div key={ti}>
-                              <img src={th.img} onClick={()=>this.openLightbox(th.img)} style={{width:'100%',aspectRatio:'3 / 4',objectFit:'cover',borderRadius:9,cursor:'zoom-in',background:'#eee',display:'block'}} />
-                              <div style={{fontSize:10.5,color:'#8a8f96',textAlign:'center',marginTop:4}}>{th.title}</div>
-                            </div>
-                          ))}
+                          {(r.shots||[]).map((th,ti)=>{
+                            const shotSel = this.isShotSelected(r.id, th.key);
+                            return (
+                              <div key={ti} style={{position:'relative'}}>
+                                <img src={th.img} onClick={()=>this.openLightbox(th.img)} style={{width:'100%',aspectRatio:'3 / 4',objectFit:'cover',borderRadius:9,cursor:'zoom-in',background:'#eee',display:'block',outline:shotSel?'2.5px solid #2a6fdb':'2.5px solid transparent',outlineOffset:-2}} />
+                                <input type="checkbox" checked={shotSel} onChange={()=>this.toggleShot(r.id, th.key)} title="เลือกรูปนี้" style={{position:'absolute',top:5,left:5,width:16,height:16,accentColor:'#2a6fdb',cursor:'pointer'}} />
+                                <div style={{fontSize:10.5,color:'#8a8f96',textAlign:'center',marginTop:4}}>{th.title}</div>
+                              </div>
+                            );
+                          })}
                         </div>
                         {mapUrl && (
                           <a href={mapUrl} target="_blank" style={{display:'inline-flex',alignItems:'center',gap:7,marginTop:12,fontSize:12,color:'#2a6fdb',textDecoration:'none',fontFamily:'ui-monospace,monospace'}}><span style={{width:7,height:7,borderRadius:'50%',background:'#2a6fdb',display:'inline-block'}}></span>เปิดแผนที่ · {gpsLabel}</a>

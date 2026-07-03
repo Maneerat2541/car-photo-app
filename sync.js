@@ -263,3 +263,29 @@ export async function deleteRecords(ids) {
   writeLocal(arr);
   notifyLocal();
 }
+
+// Delete specific shots (photos) out of one record — used by the office
+// "select individual photos" delete flow. Other shots and the record's own
+// fields (plate, location, dateKey, ...) are left untouched. If every shot of
+// the record ends up removed, the now-empty record is deleted too so no
+// zero-photo card lingers in the feed/gallery.
+export async function deleteShots(recordId, keys) {
+  const keySet = new Set(keys);
+  if (mode === 'firebase' && recordsCol) {
+    const snap = await fb.getDocs(fb.query(shotsCol, fb.where('recordId', '==', String(recordId))));
+    const toDelete = snap.docs.filter(d => keySet.has(d.data().key));
+    await Promise.all(toDelete.map(d => fb.deleteDoc(d.ref).catch(() => {})));
+    if (toDelete.length >= snap.docs.length) {
+      try { await fb.deleteDoc(fb.doc(recordsCol, String(recordId))); } catch (e) {}
+    }
+    return;
+  }
+  const arr = readLocal();
+  const idx = arr.findIndex(r => String(r.id) === String(recordId));
+  if (idx === -1) return;
+  const rec = Object.assign({}, arr[idx]);
+  rec.shots = (rec.shots || []).filter(sh => !keySet.has(sh.key));
+  if (rec.shots.length === 0) arr.splice(idx, 1); else arr[idx] = rec;
+  writeLocal(arr);
+  notifyLocal();
+}
