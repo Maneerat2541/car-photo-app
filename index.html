@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>ระบบเก็บข้อมูลรูปรถ</title>
 
+<!-- PWA: ติดตั้งเป็นแอปบนหน้าจอโฮมได้ (มือถือเท่านั้น หน้าออฟฟิศไม่เกี่ยว) -->
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#2a6fdb">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="CarPhoto">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -533,6 +543,14 @@ ReactDOM.createRoot(document.getElementById('root')).render(<CarPhotoApp />);
     var compiled = Babel.transform(src, { presets: [['react', { runtime: 'classic' }]] }).code;
     (0, eval)(compiled);
   })();
+</script>
+<script>
+  // ลงทะเบียน service worker เพื่อให้ติดตั้งเป็นแอปได้ (PWA) — เฉพาะหน้านี้
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch((e) => console.warn('sw register failed', e));
+    });
+  }
 </script>
 </body>
 </html>
