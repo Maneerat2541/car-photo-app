@@ -107,21 +107,25 @@ export async function addRecord(rec) {
   meta.createdAt = Date.now();
 
   if (mode === 'firebase' && recordsCol) {
+    // คิวที่ผู้ใช้ต้องรอจริง ๆ ก่อนถือว่า "ส่งสำเร็จ" มีแค่ตัวรายการ + รูป 3 ใบ (2 รอบเดินทาง
+    // ไป Firestore) — สถิติรายวัน/บันทึกลงชีตไม่ใช่เงื่อนไขของความสำเร็จ จึงยิงเป็นงานพื้นหลัง
+    // ไม่ await ต่อ (เดิมมี getDoc ย้อนอ่านค่าหลัง setDoc ก่อน resolve ทำให้ต้องรอเพิ่มอีก 2 รอบ
+    // โดยไม่จำเป็น ทำให้ "กดส่ง" ค้างหมุนนานขึ้นโดยเฉพาะบนเน็ตมือถือ)
+    const hour = new Date(meta.createdAt).getHours();
     const recRef = await fb.addDoc(recordsCol, meta);
     await Promise.all(shots.map((sh, i) => fb.addDoc(shotsCol, {
       recordId: recRef.id, order: i, key: sh.key, title: sh.title, img: sh.img,
       timeLabel: sh.timeLabel, location: sh.location || null,
     })));
-    let dailyCount = null;
-    try {
-      const hour = new Date(meta.createdAt).getHours();
-      await fb.setDoc(fb.doc(statsCol, meta.dateKey), {
-        dateKey: meta.dateKey, count: fb.increment(1), ['hours.' + hour]: fb.increment(1),
-      }, { merge: true });
-      const snap = await fb.getDoc(fb.doc(statsCol, meta.dateKey));
-      dailyCount = snap.exists() ? (snap.data().count || null) : null;
-    } catch (e) { console.warn('[sync] stats bump failed', e); }
-    logToSheet({ date: meta.dateLabel, time: meta.time, count: dailyCount, plate: meta.plate || '', dateKey: meta.dateKey });
+    fb.setDoc(fb.doc(statsCol, meta.dateKey), {
+      dateKey: meta.dateKey, count: fb.increment(1), ['hours.' + hour]: fb.increment(1),
+    }, { merge: true })
+      .then(() => fb.getDoc(fb.doc(statsCol, meta.dateKey)))
+      .then(snap => logToSheet({ date: meta.dateLabel, time: meta.time, count: snap.exists() ? (snap.data().count || null) : null, plate: meta.plate || '', dateKey: meta.dateKey }))
+      .catch(e => {
+        console.warn('[sync] stats bump failed', e);
+        logToSheet({ date: meta.dateLabel, time: meta.time, count: null, plate: meta.plate || '', dateKey: meta.dateKey });
+      });
     return recRef.id;
   }
 
