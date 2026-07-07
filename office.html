@@ -35,7 +35,7 @@ class OfficeScreen extends React.Component {
     super(props);
     this.SYNC_CONFIG = (typeof window !== 'undefined' && window.CARPHOTO_FIREBASE) || null;
     this.sampleSteps = [{ key:'bar', title:'บาร์รถ' }, { key:'back', title:'หลังรถ' }, { key:'plate', title:'ทะเบียนรถ' }];
-    this.state = { records:[], mode:'local', lightbox:null, flash:{}, zipping:null, dailyStats:{}, chartView:'week', samples:{}, sampleBusy:null, selected:{}, deletingSelection:false };
+    this.state = { records:[], mode:'local', lightbox:null, flash:{}, zipping:null, dailyStats:{}, chartView:'week', samples:{}, sampleBusy:null, selected:{}, deletingSelection:false, editingPlate:null, plateDraft:'', savingPlate:false };
     this.seen = null; // null until first snapshot, then a Set of known ids
   }
 
@@ -74,6 +74,18 @@ class OfficeScreen extends React.Component {
     this.setState({ sampleBusy: null });
   }
   removeSample(key){ if (this.sync) Promise.resolve(this.sync.deleteSample(key)).catch(()=>{}); }
+
+  // ── แก้ไขเลขทะเบียนของแต่ละคันจากออฟฟิศ (กรณีภาคสนามไม่ได้พิมพ์มา) ──
+  startEditPlate(id, current){ this.setState({ editingPlate:String(id), plateDraft: current || '', savingPlate:false }); }
+  cancelEditPlate(){ this.setState({ editingPlate:null, plateDraft:'', savingPlate:false }); }
+  async saveEditPlate(id){
+    if (!this.sync || this.state.savingPlate) return;
+    const value = (this.state.plateDraft || '').trim();
+    this.setState({ savingPlate:true });
+    try { await this.sync.updateRecordPlate(id, value); this.setState({ editingPlate:null, plateDraft:'', savingPlate:false }); }
+    catch(e){ console.warn('update plate failed', e); this.setState({ savingPlate:false }); alert('บันทึกเลขทะเบียนไม่สำเร็จ ลองใหม่'); }
+  }
+  onPlateKeyDown(id, e){ if (e.key==='Enter') this.saveEditPlate(id); else if (e.key==='Escape') this.cancelEditPlate(); }
 
   onData(recs){
     const ids = recs.map(r => String(r.id));
@@ -389,7 +401,18 @@ class OfficeScreen extends React.Component {
                         <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}}>
                           <div style={{display:'flex',alignItems:'center',gap:9,minWidth:0}}>
                             <input type="checkbox" checked={this.isRecordSelected(r)} onChange={()=>this.toggleRecord(r)} title="เลือกทั้งคัน" style={{width:16,height:16,accentColor:'#2a6fdb',cursor:'pointer',flex:'none'}} />
-                            <div style={{fontSize:17,fontWeight:700,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{r.plate || 'ไม่ระบุทะเบียน'}</div>
+                            {this.state.editingPlate === String(r.id) ? (
+                              <div style={{display:'flex',alignItems:'center',gap:6,minWidth:0}}>
+                                <input autoFocus value={this.state.plateDraft} onChange={(e)=>this.setState({plateDraft:e.target.value})} onKeyDown={(e)=>this.onPlateKeyDown(r.id,e)} placeholder="พิมพ์เลขทะเบียน" style={{fontSize:15,fontWeight:600,border:'1.5px solid #2a6fdb',borderRadius:8,padding:'5px 9px',width:150,outline:'none',fontFamily:'inherit'}} />
+                                <button onClick={()=>this.saveEditPlate(r.id)} disabled={this.state.savingPlate} title="บันทึก" style={{border:'none',background:'#2a6fdb',color:'#fff',borderRadius:7,width:30,height:30,fontSize:15,cursor:this.state.savingPlate?'default':'pointer',flex:'none',opacity:this.state.savingPlate?.6:1}}>✓</button>
+                                <button onClick={()=>this.cancelEditPlate()} title="ยกเลิก" style={{border:'1.5px solid #e0ddd5',background:'#fff',color:'#8a8f96',borderRadius:7,width:30,height:30,fontSize:14,cursor:'pointer',flex:'none'}}>✕</button>
+                              </div>
+                            ) : (
+                              <div onClick={()=>this.startEditPlate(r.id, r.plate)} title="แตะเพื่อแก้ไขเลขทะเบียน" style={{display:'inline-flex',alignItems:'center',gap:7,cursor:'pointer',padding:'3px 8px',margin:'-3px -8px',borderRadius:8,minWidth:0}}>
+                                <span style={{fontSize:17,fontWeight:700,color:(r.plate||'').trim()?'#1c1c1e':'#b0ada4',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{r.plate || 'ไม่ระบุทะเบียน'}</span>
+                                <span style={{fontSize:14,color:'#2a6fdb',flex:'none'}}>✎</span>
+                              </div>
+                            )}
                             {isNew && <span style={{fontSize:10.5,fontWeight:700,color:'#fff',background:'#1fb26b',padding:'2px 8px',borderRadius:20,flex:'none'}}>ใหม่</span>}
                           </div>
                           <div style={{fontSize:12.5,color:'#8a8f96',fontFamily:'ui-monospace,monospace',flex:'none'}}>{r.time} น.</div>

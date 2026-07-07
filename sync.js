@@ -268,6 +268,23 @@ export async function deleteRecords(ids) {
   notifyLocal();
 }
 
+// Update just the license-plate text on one record — used by the office to
+// fill in / correct the plate for cars the field staff left blank. Writes a
+// single field (1 tiny write, no photo re-upload), so it's very cheap on quota.
+export async function updateRecordPlate(id, plate) {
+  const value = String(plate == null ? '' : plate).trim();
+  if (mode === 'firebase' && recordsCol) {
+    await fb.updateDoc(fb.doc(recordsCol, String(id)), { plate: value });
+    return;
+  }
+  const arr = readLocal();
+  const idx = arr.findIndex(r => String(r.id) === String(id));
+  if (idx === -1) return;
+  arr[idx] = Object.assign({}, arr[idx], { plate: value });
+  writeLocal(arr);
+  notifyLocal();
+}
+
 // Delete specific shots (photos) out of one record — used by the office
 // "select individual photos" delete flow. Other shots and the record's own
 // fields (plate, location, dateKey, ...) are left untouched. If every shot of
